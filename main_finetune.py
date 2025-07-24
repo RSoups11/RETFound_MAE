@@ -3,6 +3,7 @@ import datetime
 import json
 
 import numpy as np
+import matplotlib.pyplot as plt
 import os
 import time
 from pathlib import Path
@@ -44,6 +45,8 @@ def get_args_parser():
                         help='images input size')
     parser.add_argument('--drop_path', type=float, default=0.2, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
+    parser.add_argument('--best_threshold', type=float, default=None,
+                        help='(Binary-class only) custom probability threshold for class 1')
 
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
@@ -142,6 +145,9 @@ def get_args_parser():
     parser.add_argument('--norm', default='IMAGENET', type=str, help='Normalization method')
     parser.add_argument('--enhance', action='store_true', default=False, help='Use enhanced data')
     parser.add_argument('--datasets_seed', default=2026, type=int)
+
+    parser.add_argument('--no_plots', action='store_true',
+                        help='Skip PNG generation (loss & ROC curves) to save disk')
 
     return parser
 
@@ -300,6 +306,12 @@ def main(args, criterion):
         print("Load checkpoint from: %s" % args.resume)
         model.load_state_dict(checkpoint['model'])
 
+        if args.nb_classes == 2:
+            if args.best_threshold is not None:
+                print(f"Threshold = {args.best_threshold:.4f}")
+            else:
+                print("No Treshold in argument -> usage of default argmax")
+
     model.to(device)
     model_without_ddp = model
 
@@ -367,7 +379,7 @@ def main(args, criterion):
                     loss_scaler=loss_scaler, epoch=epoch, mode='best')
         print("Best epoch = %d, Best score = %.4f" % (best_epoch, max_score))
 
-
+        '''
         if epoch == (args.epochs - 1):
             checkpoint = torch.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'), map_location='cpu')
             model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
@@ -375,11 +387,13 @@ def main(args, criterion):
             print("Test with the best model, epoch = %d:" % checkpoint['epoch'])
             test_stats, auc_roc = evaluate(data_loader_test, model, device, args, -1, mode='test',
                                            num_class=args.nb_classes, log_writer=None)
-
+        '''
+        
         if log_writer is not None:
             log_writer.add_scalar('loss/val', val_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                     'val_loss': val_stats['loss'],
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 
@@ -392,6 +406,39 @@ def main(args, criterion):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+    # train/loss curve : 
+    if not args.no_plots:
+        log_file = os.path.join(args.output_dir, args.task, "log.txt")
+        train_losses = []
+        val_losses = []
+    
+        with open(log_file, "r") as f:
+            for line in f:
+                log_entry = json.loads(line)
+                train_loss = log_entry.get("train_loss", None)
+                val_loss = log_entry.get("val_loss", None)
+                if train_loss is not None and val_loss is not None:
+                    train_losses.append(train_loss)
+                    val_losses.append(val_loss)
+    
+        epochs = list(range(len(train_losses)))
+        if len(train_losses) > 0 and len(val_losses) > 0 and len(train_losses) == len(val_losses):
+            plt.figure(figsize=(8, 5), dpi=150)
+            plt.plot(epochs, train_losses, label="Train Loss", linewidth=2)
+            plt.plot(epochs, val_losses, label="Val Loss", linewidth=2)
+            plt.xlabel("Epoch")
+            plt.ylabel("Loss")
+            plt.title("Train vs Validation Loss")
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            loss_curve_path = os.path.join(args.output_dir, args.task, "loss_curve.png")
+            plt.savefig(loss_curve_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"[INFO] Saved loss curve to {loss_curve_path}")
+        else:
+            print("[WARNING] Not enough loss data to generate loss curve.")
 
 
 if __name__ == '__main__':

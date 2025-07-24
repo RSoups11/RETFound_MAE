@@ -7,12 +7,24 @@ import os
 from torchvision import datasets, transforms
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from torchvision.datasets import ImageFolder
 
-
+class ImageFolderWithPaths(datasets.ImageFolder):
+    """ImageFolder return (image, path, label)."""
+    def __getitem__(self, index):
+        path, target = self.samples[index] # path + label
+        img = self.loader(path) # read (PIL)
+        if self.transform is not None:
+            img = self.transform(img)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return img, path, target
+        
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
     root = os.path.join(args.data_path, is_train)
-    dataset = datasets.ImageFolder(root, transform=transform)
+    # dataset = datasets.ImageFolderWithPaths(root, transform=transform)
+    dataset = ImageFolderWithPaths(root, transform=transform)
 
     return dataset
 

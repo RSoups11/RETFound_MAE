@@ -10,11 +10,12 @@ from timm.data import Mixup
 from timm.utils import accuracy
 from sklearn.metrics import (
     accuracy_score, roc_auc_score, f1_score, average_precision_score,
-    hamming_loss, jaccard_score, recall_score, precision_score, cohen_kappa_score
+    hamming_loss, jaccard_score, recall_score, precision_score, cohen_kappa_score, roc_curve
 )
 from pycm import ConfusionMatrix
 import util.misc as misc
 import util.lr_sched as lr_sched
+import pandas as pd
 
 def train_one_epoch(
     model: torch.nn.Module,
@@ -39,11 +40,15 @@ def train_one_epoch(
     if log_writer:
         print(f'log_dir: {log_writer.log_dir}')
     
-    for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')):
+    # for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')):
+    for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')):
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
-        
-        samples, targets = samples.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+
+        samples, _, targets = batch
+        # samples, targets = samples.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+        samples = samples.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
         if mixup_fn:
             samples, targets = mixup_fn(samples, targets)
         
@@ -87,19 +92,27 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     criterion = nn.CrossEntropyLoss()
     metric_logger = misc.MetricLogger(delimiter="  ")
     os.makedirs(os.path.join(args.output_dir, args.task), exist_ok=True)
-    
     model.eval()
+    score = float("nan")
     true_onehot, pred_onehot, true_labels, pred_labels, pred_softmax = [], [], [], [], []
+    img_paths, y_true_list, y_pred_list, y_prob1_list = [], [], [], []
     
     for batch in metric_logger.log_every(data_loader, 10, f'{mode}:'):
-        images, target = batch[0].to(device, non_blocking=True), batch[-1].to(device, non_blocking=True)
+        # images, target = batch[0].to(device, non_blocking=True), batch[-1].to(device, non_blocking=True)
+        images, paths, target = batch
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
         target_onehot = F.one_hot(target.to(torch.int64), num_classes=num_class)
         
         with torch.cuda.amp.autocast():
             output = model(images)
             loss = criterion(output, target)
         output_ = nn.Softmax(dim=1)(output)
-        output_label = output_.argmax(dim=1)
+        proba1  = output_[:, 1]
+        if num_class == 2 and getattr(args, "best_threshold", None) is not None:
+            output_label = (proba1 >= args.best_threshold).long()
+        else:
+            output_label = output_.argmax(dim=1)
         output_onehot = F.one_hot(output_label.to(torch.int64), num_classes=num_class)
         
         metric_logger.update(loss=loss.item())
@@ -108,41 +121,107 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
         true_labels.extend(target.cpu().numpy())
         pred_labels.extend(output_label.detach().cpu().numpy())
         pred_softmax.extend(output_.detach().cpu().numpy())
-    
-    accuracy = accuracy_score(true_labels, pred_labels)
-    hamming = hamming_loss(true_onehot, pred_onehot)
-    jaccard = jaccard_score(true_onehot, pred_onehot, average='macro')
-    average_precision = average_precision_score(true_onehot, pred_softmax, average='macro')
-    kappa = cohen_kappa_score(true_labels, pred_labels)
-    f1 = f1_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    roc_auc = roc_auc_score(true_onehot, pred_softmax, multi_class='ovr', average='macro')
-    precision = precision_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    recall = recall_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    
-    score = (f1 + roc_auc + kappa) / 3
-    if log_writer:
-        for metric_name, value in zip(['accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa', 'score'],
-                                       [accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa, score]):
-            log_writer.add_scalar(f'perf/{metric_name}', value, epoch)
-    
-    print(f'val loss: {metric_logger.meters["loss"].global_avg}')
-    print(f'Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}, ROC AUC: {roc_auc:.4f}, Hamming Loss: {hamming:.4f},\n'
-          f' Jaccard Score: {jaccard:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f},\n'
-          f' Average Precision: {average_precision:.4f}, Kappa: {kappa:.4f}, Score: {score:.4f}')
-    
-    metric_logger.synchronize_between_processes()
-    
-    results_path = os.path.join(args.output_dir, args.task, f'metrics_{mode}.csv')
-    file_exists = os.path.isfile(results_path)
-    with open(results_path, 'a', newline='', encoding='utf8') as cfa:
-        wf = csv.writer(cfa)
-        if not file_exists:
-            wf.writerow(['val_loss', 'accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa'])
-        wf.writerow([metric_logger.meters["loss"].global_avg, accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa])
-    
+
+        img_paths.extend(paths)
+        y_true_list.extend(target.cpu().numpy())
+        y_pred_list.extend(output_label.cpu().numpy())
+        y_prob1_list.extend(proba1.cpu().numpy())
+
+    if not args.no_plots:
+        if num_class == 2 and mode in ['val', 'test']:
+            y_true = np.array(true_labels)
+            y_probs = np.array(pred_softmax)[:, 1]  # proba classe 1
+
+            if len(np.unique(y_true)) < 2:
+                print("[WARNING] ROC AUC not computed: only one class present in y_true")
+                auc_score = float("nan")
+            else:
+                fpr, tpr, thresholds = roc_curve(y_true, y_probs)
+                auc_score = roc_auc_score(y_true, y_probs)
+                
+                plt.figure(figsize=(8, 5), dpi=150)
+                plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {auc_score:.2f})')
+                plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+                plt.xlabel("False Positive Rate")
+                plt.ylabel("True Positive Rate")
+                plt.title(f"ROC Curve - {mode}")
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+            
+                fig_path = os.path.join(args.output_dir, args.task, f'roc_curve_{mode}.png')
+                plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+    safe_metrics = True
+    if mode == 'test' and len(np.unique(true_labels)) < 2:
+        print("[WARNING] Skipping full metric computation: only one class in ground-truth.")
+        safe_metrics = False
+
+    if safe_metrics:
+        accuracy = accuracy_score(true_labels, pred_labels)
+        hamming = hamming_loss(true_onehot, pred_onehot)
+        jaccard = jaccard_score(true_onehot, pred_onehot, average='macro')
+        average_precision = average_precision_score(true_onehot, pred_softmax, average='macro')
+        kappa = cohen_kappa_score(true_labels, pred_labels)
+        f1 = f1_score(true_onehot, pred_onehot, zero_division=0, average='macro')
+        roc_auc = roc_auc_score(true_onehot, pred_softmax, multi_class='ovr', average='macro')
+        precision = precision_score(true_onehot, pred_onehot, zero_division=0, average='macro')
+        recall = recall_score(true_onehot, pred_onehot, zero_division=0, average='macro')
+        
+        score = (f1 + roc_auc + kappa) / 3
+        if log_writer:
+            for metric_name, value in zip(['accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa', 'score'],
+                                           [accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa, score]):
+                log_writer.add_scalar(f'perf/{metric_name}', value, epoch)
+        
+        print(f'val loss: {metric_logger.meters["loss"].global_avg}')
+        print(f'Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}, ROC AUC: {roc_auc:.4f}, Hamming Loss: {hamming:.4f},\n'
+              f' Jaccard Score: {jaccard:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f},\n'
+              f' Average Precision: {average_precision:.4f}, Kappa: {kappa:.4f}, Score: {score:.4f}')
+        
+        metric_logger.synchronize_between_processes()
+        
+        results_path = os.path.join(args.output_dir, args.task, f'metrics_{mode}.csv')
+        file_exists = os.path.isfile(results_path)
+        with open(results_path, 'a', newline='', encoding='utf8') as cfa:
+            wf = csv.writer(cfa)
+            if not file_exists:
+                wf.writerow(['val_loss', 'accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa'])
+            wf.writerow([metric_logger.meters["loss"].global_avg, accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa])
+
+    else :
+        score = float("nan")
+
+    # USE IF FINE-TUNING
+    '''
+    if mode == 'test':
+        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
+        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
+        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
+        df_preds = pd.DataFrame({
+            "filepath": img_paths,
+            "y_true":   y_true_list,
+            "y_pred":   y_pred_list,
+            "prob_1":   y_prob1_list,
+        })
+        df_preds.to_csv(os.path.join(
+            args.output_dir, args.task, f"preds_{mode}.csv"), index=False)
+    '''
+
+    # USE IF INFERENCE
     if mode == 'test':
         cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
         cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
         plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
     
+        df_preds = pd.DataFrame({
+            "filepath": img_paths,
+            "predicted_label": ["DR" if y == 1 else "NoDR" for y in y_pred_list],
+            "proba_DR": [round(float(prob), 4) for prob in y_prob1_list],
+            "proba_NoDR": [round(float(1 - prob), 4) for prob in y_prob1_list],
+        })
+        df_preds.to_csv(os.path.join(
+            args.output_dir, args.task, f"predictions_{mode}.csv"), index=False)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, score
