@@ -149,6 +149,12 @@ def get_args_parser():
     parser.add_argument('--no_plots', action='store_true',
                         help='Skip PNG generation (loss & ROC curves) to save disk')
 
+    parser.add_argument('--class_weighted_loss', action='store_true', default=False,
+                    help='Classes weighting for CrossEntropyLoss')
+
+    parser.add_argument('--inference', action='store_true',
+                    help='If set, saves predictions and detailed outputs (e.g. for inference mode)')
+
     return parser
 
 
@@ -329,6 +335,25 @@ def main(args, criterion):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
+
+    if args.class_weighted_loss:
+        # Compute weight from train set
+        labels = [lbl for _, lbl in dataset_train.samples]  # indice list
+        class_counts = np.bincount(labels, minlength=args.nb_classes)
+        # Inversly weighting from distribution (low distributed class with bigger weight)
+        class_weights = class_counts.sum() / (class_counts * len(class_counts))
+        class_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
+        criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+        print(f"[INFO] Class counts: {class_counts}")
+    else:
+        # Normal behaviour
+        if mixup_fn is not None:
+            criterion = SoftTargetCrossEntropy()
+        elif args.smoothing > 0.:
+            criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+        else:
+            criterion = torch.nn.CrossEntropyLoss()
+        
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module

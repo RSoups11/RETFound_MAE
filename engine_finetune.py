@@ -193,8 +193,37 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     else :
         score = float("nan")
 
-    # USE IF FINE-TUNING
+    if mode == 'test' and getattr(args, 'inference', False):
+        print("[INFO] Inference mode activated: saving predictions and confusion matrix.")
+        
+        # Plot Confusion Matrix
+        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
+        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
+        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
+
+        # Save predictions
+        if num_class == 2:
+            df_preds = pd.DataFrame({
+                "filepath": img_paths,
+                "y_true": y_true_list,
+                "y_pred": y_pred_list,
+                "proba_0": [round(float(1 - prob), 4) for prob in y_prob1_list],
+                "proba_1": [round(float(prob), 4) for prob in y_prob1_list],
+            })
+        else:
+            # Multi-class saves
+            proba_cols = {f"proba_{i}": [round(float(probs[i]), 4) for probs in pred_softmax] for i in range(num_class)}
+            df_preds = pd.DataFrame({
+                "filepath": img_paths,
+                "y_true": y_true_list,
+                "y_pred": y_pred_list,
+                **proba_cols
+            })
+
+        df_preds.to_csv(os.path.join(
+            args.output_dir, args.task, f"predictions_{mode}.csv"), index=False)
     '''
+    # USE IF FINE-TUNING
     if mode == 'test':
         cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
         cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
@@ -207,7 +236,7 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
         })
         df_preds.to_csv(os.path.join(
             args.output_dir, args.task, f"preds_{mode}.csv"), index=False)
-    '''
+
 
     # USE IF INFERENCE
     if mode == 'test':
@@ -223,5 +252,5 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
         })
         df_preds.to_csv(os.path.join(
             args.output_dir, args.task, f"predictions_{mode}.csv"), index=False)
-
+    '''
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, score
