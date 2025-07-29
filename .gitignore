@@ -137,3 +137,5 @@ data/**
 weights/
 output_dir/
 output_logs/
+optuna.log
+optuna/

@@ -231,7 +231,7 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
             })
 
         df_preds.to_csv(
-            os.path.join(args.output_dir, args.task, f"predictions_{mode}.csv"),
+            os.path.join(args.output_dir, args.task, f"predictions.csv"),
             index=False
         )
         print("[INFO] Predictions saved.")

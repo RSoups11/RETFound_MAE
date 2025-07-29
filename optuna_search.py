@@ -2,26 +2,42 @@
 # optuna_search.py
 # -----------------------------------------------------------
 # Bayesian search on RETFound using Optuna (single GPU setup)
+# Includes pruning + logging + disk management
 
-import os, json, shutil, warnings, datetime
+import os
+import json
+import shutil
+import csv
+import warnings
 import optuna
+from datetime import datetime
 from main_finetune import get_args_parser, main
 
 # -------- CONFIGURATION ---------------
-N_TRIALS = 60
+N_TRIALS = 40
 EPOCHS = 50
 DB_FILE = "sqlite:///optuna/retfound.db"
 DATA_PATH = "./data"
-PRETRAINED_PATH = "RETFound_mae_natureCFP"
-NB_CLASSES = 5
+PRETRAINED_PATH = "RETFound_mae_natureCFP"  # or path to your RETFound_shanghai.pth
+NB_CLASSES = 2
 SAVE_DIR = "optuna"
+RESULTS_CSV = os.path.join(SAVE_DIR, "optuna_results.csv")
 # --------------------------------------
 
+# Global tracker
+objective_best_score = {"score": 0.0, "trial_id": -1}
+
+csv_fields = [
+    "trial_id", "auc",
+    "blr", "weight_decay", "drop_path", "layer_decay",
+    "smoothing", "mixup", "cutmix", "batch_size"
+]
+
 def build_args(trial):
-    """Builds the argument object required by RETFound (main_finetune.py)."""
+    """Builds argparse arguments for RETFound fine-tuning"""
     args = get_args_parser().parse_args([])
 
-    # ---- Optuna Search Space ----
+    # --- Search space ---
     args.blr = trial.suggest_float("blr", 1e-5, 1e-2, log=True)
     args.weight_decay = trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True)
     args.drop_path = trial.suggest_float("drop_path", 0.0, 0.4)
@@ -31,7 +47,7 @@ def build_args(trial):
     args.cutmix = trial.suggest_float("cutmix", 0.0, 0.3)
     args.batch_size = trial.suggest_int("batch_size", 16, 32, step=16)
 
-    # ---- Fixed Parameters ----
+    # --- Fixed args ---
     args.model = "RETFound_mae"
     args.epochs = EPOCHS
     args.input_size = 224
@@ -43,35 +59,70 @@ def build_args(trial):
     args.task = f"optuna_trial_{trial.number}"
     args.output_dir = os.path.join(SAVE_DIR, f"trial_{trial.number}")
     args.log_dir = "./output_logs"
-    args.savemodel = True  # required to generate checkpoint-best.pth
+    args.savemodel = True
     args.device = "cuda"
     args.inference = False
-    args.class_weighted_loss = True  # Make sure it's enabled in your code
+    # args.class_weighted_loss = True # Make sure it's enabled in your code
     args.eval = False
     args.no_plots = True
 
     return args
 
+def log_trial_to_csv(trial, auc):
+    """Logs hyperparameters and AUC to CSV"""
+    row = {
+        "trial_id": trial.number,
+        "auc": auc,
+        "blr": trial.params["blr"],
+        "weight_decay": trial.params["weight_decay"],
+        "drop_path": trial.params["drop_path"],
+        "layer_decay": trial.params["layer_decay"],
+        "smoothing": trial.params["smoothing"],
+        "mixup": trial.params["mixup"],
+        "cutmix": trial.params["cutmix"],
+        "batch_size": trial.params["batch_size"]
+    }
+
+    new_file = not os.path.exists(RESULTS_CSV)
+    with open(RESULTS_CSV, mode="a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
+        if new_file:
+            writer.writeheader()
+        writer.writerow(row)
+
 def objective(trial):
     args = build_args(trial)
-
     os.makedirs(args.output_dir, exist_ok=True)
+
     print(f"[INFO] Starting trial #{trial.number} → Saving to {args.output_dir}")
+    auc = main(args, criterion=None)
 
-    # Run fine-tuning and return best validation AUC
-    best_auc = main(args, criterion=None)
+    # Report intermediate score to enable pruning
+    trial.report(auc, step=args.epochs)
+    if trial.should_prune():
+        print(f"[PRUNE] Trial #{trial.number} pruned at epoch {args.epochs} with AUC={auc:.4f}")
+        raise optuna.exceptions.TrialPruned()
 
-    # Save only the best checkpoint
-    if best_auc == objective.best_value:
-        final_path = os.path.join(SAVE_DIR, "checkpoint-best.pth")
-        shutil.copyfile(os.path.join(args.output_dir, "checkpoint-best.pth"), final_path)
-        print(f"[INFO] Best checkpoint updated → {final_path}")
+    # Log result
+    log_trial_to_csv(trial, auc)
 
-    return best_auc
+    # Save best checkpoint
+    if auc > objective_best_score["score"]:
+        ckpt_src = os.path.join(args.output_dir, "checkpoint-best.pth")
+        ckpt_dest = os.path.join(SAVE_DIR, "checkpoint-best.pth")
+        if os.path.exists(ckpt_src):
+            shutil.copyfile(ckpt_src, ckpt_dest)
+            print(f"[INFO] [!] New best model saved: {ckpt_dest}")
+        objective_best_score["score"] = auc
+        objective_best_score["trial_id"] = trial.number
 
-# To track the best score across calls
-objective.best_value = 0.0
+    # Clean up trial folder to save disk space
+    if os.path.exists(args.output_dir):
+        shutil.rmtree(args.output_dir)
 
+    return auc
+
+# ------------- ENTRYPOINT -------------
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -81,17 +132,13 @@ if __name__ == "__main__":
         storage=DB_FILE,
         direction="maximize",
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(multivariate=True)
+        sampler=optuna.samplers.TPESampler(multivariate=True),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
     )
 
-    def wrapped_objective(trial):
-        val = objective(trial)
-        if val > objective.best_value:
-            objective.best_value = val
-        return val
+    study.optimize(objective, n_trials=N_TRIALS, n_jobs=1)
 
-    study.optimize(wrapped_objective, n_trials=N_TRIALS, n_jobs=1)
-
-    print("\n=== SEARCH FINISHED ===")
+    print("\n=== OPTUNA SEARCH COMPLETE ===")
+    print("Best trial ID       :", objective_best_score["trial_id"])
+    print("Best validation AUC :", objective_best_score["score"])
     print("Best hyperparameters:\n", json.dumps(study.best_params, indent=2))
-    print(f"Best validation AUC = {study.best_value:.4f}")

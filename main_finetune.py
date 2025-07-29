@@ -346,11 +346,7 @@ def main(args, criterion):
         criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
         print(f"[INFO] Class counts: {class_counts}")
     else:
-        # Normal behaviour
-        if mixup_fn is not None:
-            criterion = SoftTargetCrossEntropy()
-        else:
-            criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss()
         
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
