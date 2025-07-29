@@ -349,8 +349,6 @@ def main(args, criterion):
         # Normal behaviour
         if mixup_fn is not None:
             criterion = SoftTargetCrossEntropy()
-        elif args.smoothing > 0.:
-            criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
         else:
             criterion = torch.nn.CrossEntropyLoss()
         
@@ -465,7 +463,9 @@ def main(args, criterion):
         else:
             print("[WARNING] Not enough loss data to generate loss curve.")
 
+    return max_score
 
+    
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()

@@ -193,15 +193,22 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     else :
         score = float("nan")
 
-    if mode == 'test' and getattr(args, 'inference', False):
-        print("[INFO] Inference mode activated: saving predictions and confusion matrix.")
-        
+    if mode == 'test':
+        print("[INFO] Test mode: generating confusion matrix.")
+    
         # Plot Confusion Matrix
-        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
-        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
-        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
+        try:
+            cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
+            cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
+            plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
+            print("[INFO] Confusion matrix saved.")
+        except Exception as e:
+            print(f"[WARNING] Failed to generate confusion matrix: {e}")
 
-        # Save predictions
+    # Save predictions when inference
+    if getattr(args, 'inference', False):
+        print("[INFO] Inference mode: saving detailed predictions.")
+
         if num_class == 2:
             df_preds = pd.DataFrame({
                 "filepath": img_paths,
@@ -211,8 +218,11 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
                 "proba_1": [round(float(prob), 4) for prob in y_prob1_list],
             })
         else:
-            # Multi-class saves
-            proba_cols = {f"proba_{i}": [round(float(probs[i]), 4) for probs in pred_softmax] for i in range(num_class)}
+            # Multi-class
+            proba_cols = {
+                f"proba_{i}": [round(float(probs[i]), 4) for probs in pred_softmax]
+                for i in range(num_class)
+            }
             df_preds = pd.DataFrame({
                 "filepath": img_paths,
                 "y_true": y_true_list,
@@ -220,37 +230,10 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
                 **proba_cols
             })
 
-        df_preds.to_csv(os.path.join(
-            args.output_dir, args.task, f"predictions_{mode}.csv"), index=False)
-    '''
-    # USE IF FINE-TUNING
-    if mode == 'test':
-        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
-        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
-        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
-        df_preds = pd.DataFrame({
-            "filepath": img_paths,
-            "y_true":   y_true_list,
-            "y_pred":   y_pred_list,
-            "prob_1":   y_prob1_list,
-        })
-        df_preds.to_csv(os.path.join(
-            args.output_dir, args.task, f"preds_{mode}.csv"), index=False)
-
-
-    # USE IF INFERENCE
-    if mode == 'test':
-        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
-        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
-        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
-    
-        df_preds = pd.DataFrame({
-            "filepath": img_paths,
-            "predicted_label": ["DR" if y == 1 else "NoDR" for y in y_pred_list],
-            "proba_DR": [round(float(prob), 4) for prob in y_prob1_list],
-            "proba_NoDR": [round(float(1 - prob), 4) for prob in y_prob1_list],
-        })
-        df_preds.to_csv(os.path.join(
-            args.output_dir, args.task, f"predictions_{mode}.csv"), index=False)
-    '''
+        df_preds.to_csv(
+            os.path.join(args.output_dir, args.task, f"predictions_{mode}.csv"),
+            index=False
+        )
+        print("[INFO] Predictions saved.")
+        
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, score
