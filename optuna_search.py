@@ -15,7 +15,7 @@ from main_finetune import get_args_parser, main
 
 # -------- CONFIGURATION ---------------
 N_TRIALS = 40
-EPOCHS = 50
+EPOCHS = 100
 DB_FILE = "sqlite:///optuna/retfound.db"
 DATA_PATH = "./data"
 PRETRAINED_PATH = "RETFound_mae_natureCFP"  # or path to your RETFound_shanghai.pth
@@ -38,14 +38,14 @@ def build_args(trial):
     args = get_args_parser().parse_args([])
 
     # --- Search space ---
-    args.blr = trial.suggest_float("blr", 1e-5, 1e-2, log=True)
-    args.weight_decay = trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True)
-    args.drop_path = trial.suggest_float("drop_path", 0.0, 0.4)
-    args.layer_decay = trial.suggest_float("layer_decay", 0.5, 0.8)
-    args.smoothing = trial.suggest_float("smoothing", 0.0, 0.2)
-    args.mixup = trial.suggest_float("mixup", 0.0, 0.4)
-    args.cutmix = trial.suggest_float("cutmix", 0.0, 0.3)
-    args.batch_size = trial.suggest_int("batch_size", 16, 32, step=16)
+    args.blr = trial.suggest_float("blr", 0.00214, 0.00643, log=True)
+    args.weight_decay = trial.suggest_float("weight_decay", 0.00044, 0.00133, log=True)
+    args.drop_path = trial.suggest_float("drop_path", 0.014 , 0.054)
+    args.layer_decay = trial.suggest_float("layer_decay", 0.592, 0.693)
+    args.smoothing = trial.suggest_float("smoothing", 0.080, 0.180)
+    args.mixup = trial.suggest_float("mixup", 0.056, 0.156)
+    args.cutmix = trial.suggest_float("cutmix", 0.124, 0.224)
+    args.batch_size = 32
 
     # --- Fixed args ---
     args.model = "RETFound_mae"
@@ -97,26 +97,32 @@ def objective(trial):
     print(f"[INFO] Starting trial #{trial.number} → Saving to {args.output_dir}")
     auc = main(args, criterion=None)
 
-    # Report intermediate score to enable pruning
+    # Report intermediate score for pruning
     trial.report(auc, step=args.epochs)
     if trial.should_prune():
         print(f"[PRUNE] Trial #{trial.number} pruned at epoch {args.epochs} with AUC={auc:.4f}")
         raise optuna.exceptions.TrialPruned()
 
-    # Log result
+    # Log result to CSV
     log_trial_to_csv(trial, auc)
 
-    # Save best checkpoint
+    # Checkpoint paths
+    ckpt_src = os.path.join(args.output_dir, "checkpoint-best.pth")
+    ckpt_dest = os.path.join(SAVE_DIR, "checkpoint-best.pth")
+
+    # Save checkpoint only if it's the best so far
     if auc > objective_best_score["score"]:
-        ckpt_src = os.path.join(args.output_dir, "checkpoint-best.pth")
-        ckpt_dest = os.path.join(SAVE_DIR, "checkpoint-best.pth")
         if os.path.exists(ckpt_src):
             shutil.copyfile(ckpt_src, ckpt_dest)
-            print(f"[INFO] [!] New best model saved: {ckpt_dest}")
+            print(f"[INFO] New best model saved at: {ckpt_dest}")
         objective_best_score["score"] = auc
         objective_best_score["trial_id"] = trial.number
+    else:
+        # If not the best, delete the checkpoint to save space
+        if os.path.exists(ckpt_src):
+            os.remove(ckpt_src)
 
-    # Clean up trial folder to save disk space
+    # Remove the trial directory regardless
     if os.path.exists(args.output_dir):
         shutil.rmtree(args.output_dir)
 
