@@ -1,11 +1,29 @@
-opencv-python~=4.9.0.80
-Pillow~=10.2.0
-pycm~=4.0
-scikit-learn~=1.4.2
+# Deep learning core
+torch
+torchvision
+
+# Vision Transformer utilities
 timm~=0.9.2
 
+# Data science & utils
 numpy~=1.26.4
+pandas
 matplotlib~=3.8.4
+scikit-learn~=1.4.2
 scikit-multilearn~=0.2.0
-huggingface-hub~=0.23.4
+
+# Image processing
+opencv-python~=4.9.0.80
+Pillow~=10.2.0
+
+# Logging & visualization
 tensorboard~=2.17.0
+
+# Evaluation
+pycm~=4.0
+
+# Hugging Face (for RETFound pretrained model download)
+huggingface-hub~=0.23.4
+
+# Hyperparameter tuning
+optuna
