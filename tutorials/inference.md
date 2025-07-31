@@ -18,9 +18,6 @@ pip install -r requirements.txt
 
 ## Folder tree
 
-__To facilitate your work, I have provide a notebook called "copy_images.ipynb" at the root of RETFound_MAE. Please keep reading this tutorial to understand how the folder tree works in RETFound.__
-
-
 Now that you have the folder RETFound_MAE, you should create a folder called "data" in it's root.
 
 ```bash
@@ -36,11 +33,17 @@ mkdir val
 mkdir test
 ```
 
+Next we are going to create a "dummy" subfolder in each folder. RETfound by default is still waiting for each split to have folder with the class name with at least one images in each classes. 
+
+Since the goal is to simulate the inference we are going to create a false class called "dummy" in each folder to avoid any crash from the code.
+
+At the end of the day, since we are going to evaluate an already fine_tuned model for classification, only the test set will be used and the class doesn't matter since we are not trying to compute any kind of metrics with unlabelled data (We will need to manually labelled the images if we want to double check). 
+
 ## Populate the folder
 
-For inference RETFound is waiting for each folder to have at least 1 images. So you should put 1 random images in the train and val subfolder at least (it will have no impact for the inference)
+For inference RETFound is waiting for each folder to have at least 1 images. So you should put 1 random images in the train/dummy and val/dummy subfolder at least (it will have no impact for the inference)
 
-Then you have to put all of your unlabelled data in the test subfolder
+Then you have to put all of your unlabelled data in the test/dummy subfolder
 
 ## Weights 
 
