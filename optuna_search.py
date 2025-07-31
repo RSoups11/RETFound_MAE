@@ -13,6 +13,7 @@ N_TRIALS      = 40
 EPOCHS        = 100
 SAVE_ROOT     = Path("optuna")
 DB_FILE       = f"sqlite:///{SAVE_ROOT}/retfound.db"
+# DB_FILE = "sqlite:///:memory:" # keep it in RAM instead
 DATA_PATH     = "./data"
 PRETRAINED    = "RETFound_mae_natureCFP"
 NB_CLASSES    = 2
