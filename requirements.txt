@@ -11,6 +11,9 @@ pandas
 matplotlib~=3.8.4
 scikit-learn~=1.4.2
 scikit-multilearn~=0.2.0
+tqdm
+imbalanced-learn
+
 
 # Image processing
 opencv-python~=4.9.0.80
