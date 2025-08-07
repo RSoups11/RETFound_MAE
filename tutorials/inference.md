@@ -18,6 +18,8 @@ pip install -r requirements.txt
 
 ## Folder tree
 
+_To facilitate your work, I have provide a notebook called "copy_images.ipynb" at the root of RETFound_MAE. Please keep reading this tutorial to understand how the folder tree works in RETFound._
+
 Now that you have the folder RETFound_MAE, you should create a folder called "data" in it's root.
 
 ```bash
