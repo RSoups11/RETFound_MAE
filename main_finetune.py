@@ -68,7 +68,8 @@ def get_args_parser():
     parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
                         help='Color jitter factor (enabled only when not using Auto/RandAug)')
     parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
-                        help='Use AutoAugment policy. "v0" or "original". " + "(default: rand-m9-mstd0.5-inc1)'),
+                        help='Use AutoAugment policy. "v0" or "original". (default: rand-m9-mstd0.5-inc1)')
+    
     parser.add_argument('--smoothing', type=float, default=0.1,
                         help='Label smoothing (default: 0.1)')
 
@@ -109,7 +110,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/', type=str,
                         help='dataset path')
-    parser.add_argument('--nb_classes', default=8, type=int,
+    parser.add_argument('--nb_classes', default=5, type=int,
                         help='number of the classification types')
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -154,6 +155,9 @@ def get_args_parser():
 
     parser.add_argument('--inference', action='store_true',
                     help='If set, saves predictions and detailed outputs (e.g. for inference mode)')
+
+    parser.add_argument("--class_weight_max", type=float, default=5.0,
+                    help="Max class weight after normalization (clamp)")
 
     return parser
 
@@ -300,6 +304,12 @@ def main(args, criterion):
 
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
+    
+    if mixup_active and args.class_weighted_loss:
+        print("[WARN] class_weighted_loss + mixup: disabling mixup to keep class weights consistent.")
+        mixup_active = False  # simple & safe
+        mixup_fn = None
+        
     if mixup_active:
         print("Mixup is activated!")
         mixup_fn = Mixup(
@@ -337,16 +347,41 @@ def main(args, criterion):
 
 
     if args.class_weighted_loss:
-        # Compute weight from train set
-        labels = [lbl for _, lbl in dataset_train.samples]  # indice list
-        class_counts = np.bincount(labels, minlength=args.nb_classes)
-        # Inversly weighting from distribution (low distributed class with bigger weight)
-        class_weights = class_counts.sum() / (class_counts * len(class_counts))
-        class_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
-        criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
-        print(f"[INFO] Class counts: {class_counts}")
+        # labels from dataset_train (list of (path, class_index))
+        labels = [lbl for _, lbl in dataset_train.samples]
+        labels = torch.as_tensor(labels, dtype=torch.long)  # CPU ok
+    
+        nb_classes = int(args.nb_classes)
+        counts = torch.bincount(labels, minlength=nb_classes).float()
+    
+        # guard against zero counts
+        eps = 1.0
+        counts_safe = counts.clone()
+        counts_safe[counts_safe == 0] = eps
+    
+        # inverse frequency weights N / (C * n_i)
+        N = counts_safe.sum()
+        C = float(nb_classes)
+        weights = N / (counts_safe * C)
+    
+        # normalise to mean 1
+        weights = weights / weights.mean()
+    
+        # 3) clamp (avoid ultra-rare class to have a weight that's to high)
+        w_max = getattr(args, "class_weight_max", 5.0)  # optionnal params
+        weights = torch.clamp(weights, max=w_max)
+    
+        # move to device and build loss
+        class_weights = weights.to(device=device, dtype=torch.float32)
+        criterion = torch.nn.CrossEntropyLoss(
+            weight=class_weights, 
+            label_smoothing=(args.smoothing if not mixup_active and args.smoothing > 0 else 0.0)
+        )
+    
+        print(f"[INFO] Class counts (train): {counts.tolist()}")
+        print(f"[INFO] Class weights (norm+clamp): {class_weights.tolist()}")
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss(label_smoothing=(args.smoothing if not mixup_active and args.smoothing > 0 else 0.0))
         
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -363,13 +398,29 @@ def main(args, criterion):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-
+    '''
     if args.eval:
         if 'epoch' in checkpoint:
             print("Test with the best model at epoch = %d" % checkpoint['epoch'])
         test_stats, auc_roc = evaluate(data_loader_test, model, device, args, epoch=0, mode='test',
                                        num_class=args.nb_classes, log_writer=log_writer)
         exit(0)
+    '''
+    
+    if args.eval:
+        if args.resume:
+            try:
+                cp = torch.load(args.resume, map_location='cpu')
+                if 'epoch' in cp:
+                    print(f"Test with the best model at epoch = {cp['epoch']}")
+            except Exception as e:
+                print(f"[WARN] Could not read epoch from checkpoint: {e}")
+        test_stats, auc_roc = evaluate(
+            data_loader_test, model, device, args, epoch=0, mode='test',
+            num_class=args.nb_classes, log_writer=log_writer
+        )
+        exit(0)
+
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()

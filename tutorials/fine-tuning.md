@@ -133,6 +133,10 @@ With the script you can search on :
 
 As well as the other classic argument to launch the RETFound __main_finetune.py__ script. The hyperparameter were arbitraly chosen in the optuna's script, so you should modify the search space in __build_args()__.
 
+## Hyperparameter search with class_weighted_loss
+
+Please note that if you are running the search on multi-classes and that you are using the __class_weighted_loss:__ argument, note that mixup and cutmix should not used as they are not compatible.
+
 ### Running the script
 
 To run the script place yourself at the root of RETFound_MAE
