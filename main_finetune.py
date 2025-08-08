@@ -67,7 +67,7 @@ def get_args_parser():
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
                         help='Color jitter factor (enabled only when not using Auto/RandAug)')
-    parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
+    parser.add_argument('--aa', type=str, default='rand-m5-mstd0.5-inc1', metavar='NAME',
                         help='Use AutoAugment policy. "v0" or "original". (default: rand-m9-mstd0.5-inc1)')
     
     parser.add_argument('--smoothing', type=float, default=0.1,
